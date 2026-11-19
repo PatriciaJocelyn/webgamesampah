@@ -2250,11 +2250,31 @@
       }
 
       // ============================================================
-      // 5. RELIABLE WEB AUDIO API SYNTHESIZER
+      // 5. RELIABLE WEB AUDIO API SYNTHESIZER (SFX + CHEERFUL BGM)
       // ============================================================
       let audioCtx = null;
       let masterGain = null;
+      let bgmGain = null;
       let audioUnlocked = false;
+      let bgmTimer = null;
+      let bgmStep = 0;
+      let bgmIsPlaying = false;
+
+      // Cheerful C-Major marimba / music-box 32-step loop (~120 BPM eighth notes)
+      const BGM_MELODY = [
+        523.25, 659.25, 783.99, 659.25, 880.00, 783.99, 659.25, 0,
+        698.46, 880.00, 783.99, 659.25, 587.33, 659.25, 523.25, 0,
+        659.25, 783.99, 1046.50, 783.99, 880.00, 783.99, 659.25, 0,
+        698.46, 587.33, 659.25, 783.99, 587.33, 493.88, 523.25, 0
+      ];
+      const BGM_BASS = [
+        261.63, 0, 0, 0, 196.00, 0, 0, 0,
+        349.23, 0, 0, 0, 196.00, 0, 261.63, 0,
+        261.63, 0, 0, 0, 196.00, 0, 0, 0,
+        349.23, 0, 196.00, 0, 261.63, 0, 0, 0
+      ];
+      const BGM_GAIN_NORMAL = 0.13; // ~13% gain so SFX remain crisp & clear
+      const BGM_GAIN_DUCKED = 0.07;
 
       function ensureAudioReady() {
         try {
@@ -2274,6 +2294,10 @@
             masterGain.gain.setValueAtTime(0.85, audioCtx.currentTime);
             masterGain.connect(compressor);
             compressor.connect(audioCtx.destination);
+
+            bgmGain = audioCtx.createGain();
+            bgmGain.gain.setValueAtTime(BGM_GAIN_NORMAL, audioCtx.currentTime);
+            bgmGain.connect(masterGain);
           }
 
           if (audioCtx.state === 'suspended') {
@@ -2300,6 +2324,88 @@
           ensureAudioReady();
         }, { capture: true, passive: true });
       });
+
+      function scheduleBgmNote(ctx, freq, duration, waveType, peakVol) {
+        if (!bgmGain || !freq || state.isMuted || !bgmIsPlaying) return;
+        const startAt = ctx.currentTime + 0.01;
+        const osc = ctx.createOscillator();
+        const env = ctx.createGain();
+
+        osc.type = waveType;
+        osc.frequency.setValueAtTime(freq, startAt);
+
+        env.gain.setValueAtTime(0.0001, startAt);
+        env.gain.linearRampToValueAtTime(peakVol, startAt + 0.012);
+        env.gain.exponentialRampToValueAtTime(0.0001, startAt + duration);
+
+        osc.connect(env);
+        env.connect(bgmGain);
+        osc.start(startAt);
+        osc.stop(startAt + duration + 0.02);
+      }
+
+      function stepBgm() {
+        if (!bgmIsPlaying || state.isMuted) return;
+        const ctx = ensureAudioReady();
+        if (!ctx || ctx.state !== 'running') return;
+
+        const idx = bgmStep % BGM_MELODY.length;
+        const melFreq = BGM_MELODY[idx];
+        const bassFreq = BGM_BASS[idx];
+
+        if (melFreq > 0) {
+          // Soft music-box / marimba voice
+          scheduleBgmNote(ctx, melFreq, 0.22, 'sine', 0.85);
+          scheduleBgmNote(ctx, melFreq * 2, 0.09, 'sine', 0.18);
+        }
+        if (bassFreq > 0) {
+          scheduleBgmNote(ctx, bassFreq, 0.36, 'triangle', 0.45);
+        }
+
+        bgmStep = (bgmStep + 1) % BGM_MELODY.length;
+      }
+
+      function setBgmLevel(level) {
+        if (!audioCtx || !bgmGain) return;
+        try {
+          bgmGain.gain.cancelScheduledValues(audioCtx.currentTime);
+          bgmGain.gain.setTargetAtTime(level, audioCtx.currentTime, 0.06);
+        } catch (_err) {}
+      }
+
+      function startBGM() {
+        if (state.isMuted) return;
+        const ctx = ensureAudioReady();
+        if (!ctx) return;
+
+        stopBGM(true);
+        bgmIsPlaying = true;
+        bgmStep = 0;
+        setBgmLevel(state.phase === 'paused' ? BGM_GAIN_DUCKED : BGM_GAIN_NORMAL);
+
+        const triggerNow = function () {
+          if (!bgmIsPlaying || state.isMuted) return;
+          stepBgm();
+          bgmTimer = window.setInterval(stepBgm, 250);
+        };
+
+        if (ctx.state === 'suspended') {
+          ctx.resume().then(triggerNow).catch(function () {});
+        } else {
+          triggerNow();
+        }
+      }
+
+      function stopBGM(immediate) {
+        bgmIsPlaying = false;
+        if (bgmTimer !== null) {
+          window.clearInterval(bgmTimer);
+          bgmTimer = null;
+        }
+        if (!immediate && audioCtx && bgmGain) {
+          setBgmLevel(0.0001);
+        }
+      }
 
       function scheduleOscillator(ctx, freq, duration, waveType, delaySec, peakGain) {
         if (!masterGain) return;
@@ -2378,9 +2484,14 @@
       function toggleMute() {
         state.isMuted = !state.isMuted;
         updateMuteUI();
-        if (!state.isMuted) {
+        if (state.isMuted) {
+          stopBGM(false);
+        } else {
           ensureAudioReady();
           playCorrectSound(1);
+          if (state.phase === 'playing' || state.phase === 'paused') {
+            startBGM();
+          }
         }
       }
 
@@ -2404,6 +2515,7 @@
         clearFactTimeout();
         stopTangkapLoop();
         stopConfetti();
+        stopBGM(false);
       }
 
       function goHome() {
@@ -2570,6 +2682,7 @@
         state.streak = 0;
         state.totalAttempts += 1;
         updateHUD();
+        setBgmLevel(BGM_GAIN_DUCKED);
         playGentleWrongSound();
         setMascotMood('guide', 'Yuk pelajari bersama!');
 
@@ -2617,6 +2730,7 @@
         }
 
         startTimer();
+        startBGM();
       }
 
       function handleContinueFromModal() {
@@ -2624,6 +2738,7 @@
         playTapSound();
         eduOverlayEl.classList.remove('is-visible');
         state.phase = 'playing';
+        setBgmLevel(BGM_GAIN_NORMAL);
 
         if (state.mode === 'pilah') {
           drawNextPilahItem();
