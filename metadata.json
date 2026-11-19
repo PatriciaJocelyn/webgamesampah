@@ -1,0 +1,6 @@
+{
+  "name": "Pilah Sampah Cerdas",
+  "description": "Game edukasi lingkungan interaktif untuk siswa SD di layar sentuh Smartboard kelas.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
